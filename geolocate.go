@@ -16,11 +16,12 @@ import (
 
 const (
 	defaultFields = "city,country,countryCode,region,regionName,city,isp,org,as,mobile,proxy,hosting,query"
-	ReqPerMin = 14
+	ReqPerMin = 14 //How many requests per minute should we make to the API?
 )
 
 var Database *sql.DB
 
+// LoginData describes the format of a Login record from the honeypot database.
 type LoginData struct {
 	LoginID       int    `db:"LoginID"`
 	Username      string `db:"Username"`
@@ -30,11 +31,13 @@ type LoginData struct {
 	Timestamp     string `db:"Timestamp"`
 }
 
+// ApiRequest describes the structure of a request that will be send to the API
 type ApiRequest struct {
 	Query  string `json:"query"`
 	Fields string `json:"fields"`
 }
 
+//ApiResponse represents the structure of the JSON object that the API will return, the data associated with the IP.
 type ApiResponse struct {
 	Country     string `json:"country"`
 	CountryCode string `json:"countryCode"`
@@ -51,30 +54,30 @@ type ApiResponse struct {
 }
 
 func main() {
-	err := connectDB()
+	err := connectDB() //Connect to the Honeypot's database
 	if err != nil {
 		log.Panicln(err)
 	}
-	loginRecords, err := getLoginDataFromDB()
+	loginRecords, err := getLoginDataFromDB() //Read in Login records
 	if err != nil {
 		log.Panicln(err)
 	}
 	log.Println(len(loginRecords))
-	//TODO make IP records unique
-	ips := uniqLoginIPs(loginRecords)
+	ips := uniqLoginIPs(loginRecords) //Remove duplicate IP addresses, remove port information from the stored IP addresses.
 	// prettyPrint, _ := json.Marshal(ips)
 	// log.Println(string(prettyPrint))
 	log.Println(len(ips))
-	geolocData, err := getDataWithRateLimit(ips)
+	geolocData, err := getDataWithRateLimit(ips) //Get data from the API
 	if err != nil {
 		log.Panicln(err)
 	}
-	err = storeGeolocationData(geolocData)
+	err = storeGeolocationData(geolocData) //Write the geolocation data out to the database
 	if err != nil {
 		log.Panicln(err)
 	}
 }
 
+// uniqLoginIPs removes duplicate IPs and converts IP:port to just IP.
 func uniqLoginIPs(loginRecords []LoginData) []string {
 	var loginRecordMap = make(map[string]int)
 	for _, record := range loginRecords {
@@ -88,17 +91,16 @@ func uniqLoginIPs(loginRecords []LoginData) []string {
 	return keys
 }
 
+//getDataWithRateLimit performs the HTTP requests to IP-API.com.
 func getDataWithRateLimit(ipSlice []string) ([]ApiResponse, error) {
 	var responseData []ApiResponse
 	loginRecordsAligned := make([]string, ((len(ipSlice)/100)+1)*100)
 	copy(loginRecordsAligned, ipSlice)
 	var chunks [][]string
-	for i := 0; i < len(ipSlice); i += 100 {
+	for i := 0; i < len(ipSlice); i += 100 { //IP-API can process sets of 100 IP addresses on the Batch endpoint
 		chunks = append(chunks, loginRecordsAligned[i:i+100])
 	}
-	// prettyPrint, _ := json.Marshal(chunks)
-	// log.Println(string(prettyPrint))
-	//TODO Rate limiting can be massively improved
+	//TODO Rate limiting should be be massively improved - see extract from documentation below
 	//If you go over the limit your requests will be throttled (HTTP 429) until your rate limit window is reset. If you constantly go over the limit your IP address will be banned for 1 hour.
 
 	//The returned HTTP header X-Rl contains the number of requests remaining in the current rate limit window. X-Ttl contains the seconds until the limit is reset.
@@ -109,6 +111,7 @@ func getDataWithRateLimit(ipSlice []string) ([]ApiResponse, error) {
 		if err != nil {
 			log.Panicln(err)
 		}
+		//Rate limit our requests, particularly if the API instructs us to.
 		if statusCode == http.StatusTooManyRequests {
 			backoffTime, err := strconv.Atoi(retryAfter)
 			if err != nil {
@@ -166,7 +169,7 @@ func getLoginDataFromDB() ([]LoginData, error) {
 	return loginDataSlice, err
 }
 
-// getGeolocationData expects slices of login data, with a size of 100 items at most.
+// getGeolocationData expects slices of IP addresses as strings, with a size of 100 items at most.
 func getGeolocationData(ipSlice []string) (statusCode int, err error, retryAfter string, data []ApiResponse) {
 	var apiRequestContent []ApiRequest
 	for _, record := range ipSlice {
@@ -175,11 +178,8 @@ func getGeolocationData(ipSlice []string) (statusCode int, err error, retryAfter
 		}
 	}
 	log.Println("Prepared request data")
-	//reader, writer := io.Pipe()
 	buff, err := json.Marshal(apiRequestContent)
-	//json.NewEncoder(writer).Encode(apiRequestContent)
-	resp, err := http.Post("http://ip-api.com/batch", "application/json", bytes.NewBuffer(buff)) //reader)
-	//writer.Close()
+	resp, err := http.Post("http://ip-api.com/batch", "application/json", bytes.NewBuffer(buff)) //Send JSON content to the API.
 	log.Println("Sent request")
 	if err != nil {
 		//log.Println(err.Error())
